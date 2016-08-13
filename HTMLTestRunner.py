@@ -65,14 +65,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 # URL: http://tungwaiyip.info/software/HTMLTestRunner.html
 
 __author__ = "Wai Yip Tung"
-__version__ = "0.8.3"
+__version__ = "0.8.2"
 
 
 """
 Change History
-
-Version 0.8.3
-* Prevent crash on class or module-level exceptions (Darren Wurf).
 
 Version 0.8.2
 * Show output inline instead of popup window (Viorel Lupu).
@@ -112,23 +109,15 @@ from xml.sax import saxutils
 #   >>> logging.basicConfig(stream=HTMLTestRunner.stdout_redirector)
 #   >>>
 
-def to_unicode(s):
-    try:
-        return unicode(s)
-    except UnicodeDecodeError:
-        # s is non ascii byte string
-        return s.decode('unicode_escape')
-
 class OutputRedirector(object):
     """ Wrapper to redirect stdout or stderr """
     def __init__(self, fp):
         self.fp = fp
 
     def write(self, s):
-        self.fp.write(to_unicode(s))
+        self.fp.write(s)
 
     def writelines(self, lines):
-        lines = map(to_unicode, lines)
         self.fp.writelines(lines)
 
     def flush(self):
@@ -446,6 +435,7 @@ a.popup_link:hover {
     <td>Fail</td>
     <td>Error</td>
     <td>View</td>
+    <td align='right'>Time (sec)</td>
 </tr>
 %(test_list)s
 <tr id='total_row'>
@@ -454,6 +444,7 @@ a.popup_link:hover {
     <td>%(Pass)s</td>
     <td>%(fail)s</td>
     <td>%(error)s</td>
+    <td>&nbsp;</td>
     <td>&nbsp;</td>
 </tr>
 </table>
@@ -467,6 +458,7 @@ a.popup_link:hover {
     <td>%(fail)s</td>
     <td>%(error)s</td>
     <td><a href="javascript:showClassDetail('%(cid)s',%(count)s)">Detail</a></td>
+    <td>&nbsp;</td>
 </tr>
 """ # variables: (style, desc, count, Pass, fail, error, cid)
 
@@ -492,6 +484,7 @@ a.popup_link:hover {
     <!--css div popup end-->
 
     </td>
+    <td align='right'>%(time)s</td>
 </tr>
 """ # variables: (tid, Class, style, desc, status)
 
@@ -500,6 +493,7 @@ a.popup_link:hover {
 <tr id='%(tid)s' class='%(Class)s'>
     <td class='%(style)s'><div class='testcase'>%(desc)s</div></td>
     <td colspan='5' align='center'>%(status)s</td>
+    <td align='right'>%(time)s</td>
 </tr>
 """ # variables: (tid, Class, style, desc, status)
 
@@ -527,13 +521,13 @@ class _TestResult(TestResult):
 
     def __init__(self, verbosity=1):
         TestResult.__init__(self)
-        self.outputBuffer = StringIO.StringIO()
         self.stdout0 = None
         self.stderr0 = None
         self.success_count = 0
         self.failure_count = 0
         self.error_count = 0
         self.verbosity = verbosity
+        self.startTime2 = 0
 
         # result is a list of result in 4 tuple
         # (
@@ -541,13 +535,16 @@ class _TestResult(TestResult):
         #   TestCase object,
         #   Test output (byte string),
         #   stack trace,
+        #   test time,
         # )
         self.result = []
 
 
     def startTest(self, test):
+        self.startTime2 = time.time()
         TestResult.startTest(self, test)
         # just one buffer for both stdout and stderr
+        self.outputBuffer = StringIO.StringIO()
         stdout_redirector.fp = self.outputBuffer
         stderr_redirector.fp = self.outputBuffer
         self.stdout0 = sys.stdout
@@ -575,12 +572,12 @@ class _TestResult(TestResult):
         # We must disconnect stdout in stopTest(), which is guaranteed to be called.
         self.complete_output()
 
-
     def addSuccess(self, test):
+        self.stopTime2 = time.time() - self.startTime2
         self.success_count += 1
         TestResult.addSuccess(self, test)
         output = self.complete_output()
-        self.result.append((0, test, output, ''))
+        self.result.append((0, test, output, '', round(self.stopTime2, 2)))
         if self.verbosity > 1:
             sys.stderr.write('ok ')
             sys.stderr.write(str(test))
@@ -589,11 +586,12 @@ class _TestResult(TestResult):
             sys.stderr.write('.')
 
     def addError(self, test, err):
+        self.stopTime2 = time.time() - self.startTime2
         self.error_count += 1
         TestResult.addError(self, test, err)
         _, _exc_str = self.errors[-1]
         output = self.complete_output()
-        self.result.append((2, test, output, _exc_str))
+        self.result.append((2, test, output, _exc_str, round(self.stopTime2, 2)))
         if self.verbosity > 1:
             sys.stderr.write('E  ')
             sys.stderr.write(str(test))
@@ -602,11 +600,12 @@ class _TestResult(TestResult):
             sys.stderr.write('E')
 
     def addFailure(self, test, err):
+        self.stopTime2 = time.time() - self.startTime2
         self.failure_count += 1
         TestResult.addFailure(self, test, err)
         _, _exc_str = self.failures[-1]
         output = self.complete_output()
-        self.result.append((1, test, output, _exc_str))
+        self.result.append((1, test, output, _exc_str, round(self.stopTime2, 2)))
         if self.verbosity > 1:
             sys.stderr.write('F  ')
             sys.stderr.write(str(test))
@@ -648,12 +647,12 @@ class HTMLTestRunner(Template_mixin):
         # Here at least we want to group them together by class.
         rmap = {}
         classes = []
-        for n,t,o,e in result_list:
+        for n,t,o,e,z in result_list:
             cls = t.__class__
             if not rmap.has_key(cls):
                 rmap[cls] = []
                 classes.append(cls)
-            rmap[cls].append((n,t,o,e))
+            rmap[cls].append((n,t,o,e,z))
         r = [(cls, rmap[cls]) for cls in classes]
         return r
 
@@ -724,7 +723,7 @@ class HTMLTestRunner(Template_mixin):
         for cid, (cls, cls_results) in enumerate(sortedResult):
             # subtotal for a class
             np = nf = ne = 0
-            for n,t,o,e in cls_results:
+            for n,t,o,e,z in cls_results:
                 if n == 0: np += 1
                 elif n == 1: nf += 1
                 else: ne += 1
@@ -748,8 +747,8 @@ class HTMLTestRunner(Template_mixin):
             )
             rows.append(row)
 
-            for tid, (n,t,o,e) in enumerate(cls_results):
-                self._generate_report_test(rows, cid, tid, n, t, o, e)
+            for tid, (n,t,o,e,z) in enumerate(cls_results):
+                self._generate_report_test(rows, cid, tid, n, t, o, e, z)
 
         report = self.REPORT_TMPL % dict(
             test_list = ''.join(rows),
@@ -761,13 +760,14 @@ class HTMLTestRunner(Template_mixin):
         return report
 
 
-    def _generate_report_test(self, rows, cid, tid, n, t, o, e):
+    def _generate_report_test(self, rows, cid, tid, n, t, o, e, z):
         # e.g. 'pt1.1', 'ft1.1', etc
         has_output = bool(o or e)
         tid = (n == 0 and 'p' or 'f') + 't%s.%s' % (cid+1,tid+1)
         name = t.id().split('.')[-1]
         doc = t.shortDescription() or ""
         desc = doc and ('%s: %s' % (name, doc)) or name
+        time = z
         tmpl = has_output and self.REPORT_TEST_WITH_OUTPUT_TMPL or self.REPORT_TEST_NO_OUTPUT_TMPL
 
         # o and e should be byte string because they are collected from stdout and stderr?
@@ -796,6 +796,7 @@ class HTMLTestRunner(Template_mixin):
             desc = desc,
             script = script,
             status = self.STATUS[n],
+            time = time,
         )
         rows.append(row)
         if not has_output:
@@ -833,3 +834,4 @@ main = TestProgram
 
 if __name__ == "__main__":
     main(module=None)
+
